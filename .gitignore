@@ -19,3 +19,6 @@ _selftest_*.tif
 # macOS
 .DS_Store
 CLAUDE.md
+
+# Release artifacts (attach to GitHub Releases, don't track)
+*.zip
