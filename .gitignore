@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Generated / local-only artifacts
+identity_*.tif
+*.cube
+_selftest_*.tif
+/tests
+
+# Planning docs (kept locally, not published)
+*-PLAN.md
+
+# macOS
+.DS_Store
