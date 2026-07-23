@@ -1,13 +1,13 @@
---[[ M0 spike: export the selected photo's rendered develop state and build a .cube.
+--[[ Export the selected photo's rendered develop state and build a .cube.
 
 Workflow:
-  1. Generate an identity image:  python3 cli.py gen-identity --size 33 --out identity_33.tif
-  2. Import identity_33.tif into Lightroom.
-  3. Select it, go to Develop, apply your RNI 5 profile (Profile Browser). Sliders at
-     default is correct for a profile-based look.
-  4. Run this menu item, pick an output folder.
-The plugin exports a 16-bit sRGB TIFF (no resize, no output sharpening), derives the
-LUT size from the export height, and calls the Python core to write the .cube.
+  1. Import the bundled identity image (identity/identity_33.tif) into Lightroom.
+  2. Select it, go to Develop, apply your profile/preset (a profile-based look
+     is correct with the sliders at default).
+  3. Run this menu item, pick an output folder -> you get one .cube.
+The plugin exports a 16-bit sRGB TIFF (no resize, no output sharpening), derives
+the LUT size from the export height, and builds the .cube in pure Lua (Cube.lua)
+-- no Python, no ImageMagick, nothing to install.
 ]]
 
 local LrApplication = import 'LrApplication'
@@ -17,27 +17,17 @@ local LrDialogs = import 'LrDialogs'
 local LrPathUtils = import 'LrPathUtils'
 local LrFileUtils = import 'LrFileUtils'
 
--- Tools. Full paths because LrTasks.execute runs with a minimal PATH.
-local PYTHON = '/opt/homebrew/bin/python3'
-local MAGICK = '/opt/homebrew/bin/magick'
-local EXTRA_PATH = '/opt/homebrew/bin'          -- prepended so the Python core finds `magick`
+local Cube = require 'Cube'
 
-local REPO = LrPathUtils.parent(_PLUGIN.path)   -- the plugin lives inside the repo
-local CLI = LrPathUtils.child(REPO, 'cli.py')
-
--- Run a shell command, capturing stdout via a temp file. Returns (exitCode, stdout).
-local function capture(cmd)
-    local tmp = LrPathUtils.child(LrPathUtils.getStandardFilePath('temp'),
-        'x2c_out_' .. tostring(LrApplication.activeCatalog():getPath():len()) .. '.txt')
-    local full = string.format('PATH=%s:$PATH %s > "%s" 2>&1', EXTRA_PATH, cmd, tmp)
-    local rc = LrTasks.execute(full)
-    local out = LrFileUtils.exists(tmp) and (LrFileUtils.readFile(tmp) or '') or ''
-    LrFileUtils.delete(tmp)
-    return rc, out
+local function readBytes(path)
+    local fh = io.open(path, 'rb')
+    if not fh then return nil end
+    local data = fh:read('*a'); fh:close(); return data
 end
-
-local function trim(s)
-    return (s:gsub('^%s+', ''):gsub('%s+$', ''))
+local function writeText(path, text)
+    local fh = io.open(path, 'w')
+    if not fh then return false end
+    fh:write(text); fh:close(); return true
 end
 
 LrTasks.startAsyncTask(function()
@@ -93,28 +83,24 @@ LrTasks.startAsyncTask(function()
         return
     end
 
-    -- LUT size N = export height (identity image is N tall, N*N wide).
-    local rcH, hOut = capture(string.format('"%s" identify -format "%%h" "%s"', MAGICK, renderedPath))
-    local n = tonumber(trim(hOut))
-    if not n or n < 2 then
-        LrDialogs.message('xmp-to-cube',
-            'Could not read LUT size from export height.\nidentify said: ' .. tostring(hOut))
+    -- Build the .cube in pure Lua. LUT size N is inferred from the export height.
+    local name = photo:getFormattedMetadata('fileName') or 'LUT'
+    name = name:gsub('%.%w+$', '')
+
+    local data = readBytes(renderedPath)
+    local text, nOrErr = data and Cube.buildCubeText(data, name)
+    if not text then
+        LrDialogs.message('xmp-to-cube: build failed', tostring(nOrErr or 'could not read export'))
         return
     end
 
-    -- Build the .cube via the Python core.
-    local name = photo:getFormattedMetadata('fileName') or 'LUT'
-    name = name:gsub('%.%w+$', '')
-    local cubePath = LrPathUtils.child(outDir, name .. '_' .. n .. '.cube')
-    local buildCmd = string.format('"%s" "%s" build-cube --size %d --in "%s" --out "%s" --title "%s"',
-        PYTHON, CLI, n, renderedPath, cubePath, name)
-    local rcB, buildOut = capture(buildCmd)
-
-    if rcB == 0 then
-        LrDialogs.message('xmp-to-cube: done',
-            string.format('LUT_3D_SIZE %d\n\nRendered: %s\nCube: %s', n, renderedPath, cubePath))
-    else
-        LrDialogs.message('xmp-to-cube: build failed',
-            'Command exited ' .. tostring(rcB) .. '\n\n' .. tostring(buildOut))
+    local cubePath = LrPathUtils.child(outDir, name .. '_' .. nOrErr .. '.cube')
+    if not writeText(cubePath, text) then
+        LrDialogs.message('xmp-to-cube', 'Could not write .cube to:\n' .. cubePath)
+        return
     end
+    LrFileUtils.delete(renderedPath)   -- leave only the .cube in the output folder
+
+    LrDialogs.message('xmp-to-cube: done',
+        string.format('LUT_3D_SIZE %d\n\nCube: %s', nOrErr, cubePath))
 end)
