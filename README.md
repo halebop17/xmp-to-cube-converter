@@ -1,5 +1,7 @@
 # xmp-to-cube
 
+> **xmp-to-cube is a free tool from the makers of [Chili RAW](https://github.com/halebop17/chili-raw-photo)** — a photo developer and asset manager for Apple Silicon Macs.
+
 A Lightroom Classic plugin that turns your develop presets and profiles — including film looks like RNI — into `.cube` 3D LUTs. Once a look is a LUT, you can use it anywhere: Photoshop, DaVinci Resolve, Affinity, Capture One, video editors, and mobile apps.
 
 It's **fully self-contained**: the whole conversion runs inside the plugin. No Python, no Homebrew, no ImageMagick, nothing to install alongside Lightroom.
