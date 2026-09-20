@@ -45,12 +45,12 @@ Both commands live under **File ▸ Plug-in Extras**.
 2. Run **xmp-to-cube: Export LUT from selected photo**.
 3. Pick an output folder — you get one `.cube`.
 
-## Upgrading from 0.2.0
+## Upgrading from v1.0
 
-Version 0.2.0 shipped a reference image that had a film profile baked into its
+Release v1.0 shipped a reference image that had a film profile baked into its
 metadata, so LUTs built with it could carry that look on top of your own. Version
-0.3.0 ships a clean reference image and imports it from a new path, so upgrading
-fixes this by itself. **Re-run any conversions you did with 0.2.0.** The stale
+1.1 ships a clean reference image and imports it from a new path, so upgrading
+fixes this by itself. **Re-run any conversions you did with v1.0.** The stale
 `identity_33.tif` left in your catalog from the old version is no longer used and
 can be removed.
 
