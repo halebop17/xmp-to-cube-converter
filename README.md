@@ -6,7 +6,9 @@ It's **fully self-contained**: the whole conversion runs inside the plugin. No P
 
 ## Install
 
-1. Download this repo (green **Code ▸ Download ZIP**, then unzip) — or clone it.
+1. Download the plugin zip from the
+   [latest release](https://github.com/halebop17/xmp-to-cube-converter/releases/latest),
+   then unzip it.
 2. In Lightroom Classic: **File ▸ Plug-in Manager… ▸ Add**, and select the
    `xmp-to-cube.lrdevplugin` folder.
 
