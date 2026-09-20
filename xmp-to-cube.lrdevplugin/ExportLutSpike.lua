@@ -25,7 +25,9 @@ local function readBytes(path)
     local data = fh:read('*a'); fh:close(); return data
 end
 local function writeText(path, text)
-    local fh = io.open(path, 'w')
+    -- 'wb': in text mode the Windows CRT turns every \n into \r\n, so the same
+    -- photo would produce a different .cube on Windows than on macOS.
+    local fh = io.open(path, 'wb')
     if not fh then return false end
     fh:write(text); fh:close(); return true
 end

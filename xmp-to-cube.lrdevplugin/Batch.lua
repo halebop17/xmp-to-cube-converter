@@ -5,8 +5,9 @@ one top-level async task, runOpenPanel only, identity fetched READ-ONLY (no
 addPhoto write), no progress scope. If this exports, we add conveniences back.
 
 Flow: pick the preset folder (name matches a Lightroom preset group) -> pick an
-output folder. For each preset: applyDevelopPreset (resolves stubbed profile ->
-real film LUT), strip spatial ops, export 16-bit sRGB, build the .cube. Size 33.
+output folder. For each preset: reset the identity photo to neutral, then
+applyDevelopPreset (resolves stubbed profile -> real film LUT), strip spatial
+ops, export 16-bit sRGB, build the .cube. Size 33.
 ]]
 
 local LrApplication = import 'LrApplication'
@@ -18,8 +19,75 @@ local LrFileUtils = import 'LrFileUtils'
 
 local Cube = require 'Cube'   -- pure-Lua TIFF -> .cube, bundled in the plugin
 
-local BUILD = 'b18'
+local BUILD = 'b19'
 local SIZE = 33
+
+-- Neutral baseline, re-applied before every preset. Without it a *partial* preset
+-- (one saved without every group ticked) inherits whatever the previous preset in
+-- the loop left behind, and the two looks blend into one .cube. The key list is
+-- the full set Lightroom itself writes into this file's XMP; the values are its
+-- defaults. The Look entry is the important one: a film profile (RGBTable) is what
+-- partial presets leak most often.
+local DEFAULTS = {
+    Look = {}, CameraProfile = 'Embedded', ConvertToGrayscale = false,
+    OverrideLookVignette = false, HDREditMode = 0,
+
+    -- White balance: non-raw files use the Incremental* pair.
+    WhiteBalance = 'As Shot', IncrementalTemperature = 0, IncrementalTint = 0,
+
+    -- Basic.
+    Exposure2012 = 0, Contrast2012 = 0, Highlights2012 = 0, Shadows2012 = 0,
+    Whites2012 = 0, Blacks2012 = 0, Texture = 0, Clarity2012 = 0, Dehaze = 0,
+    Vibrance = 0, Saturation = 0,
+
+    -- Tone curve: linear on all four channels.
+    ToneCurveName2012 = 'Linear',
+    ToneCurvePV2012      = { 0, 0, 255, 255 },
+    ToneCurvePV2012Red   = { 0, 0, 255, 255 },
+    ToneCurvePV2012Green = { 0, 0, 255, 255 },
+    ToneCurvePV2012Blue  = { 0, 0, 255, 255 },
+    ParametricShadows = 0, ParametricDarks = 0, ParametricLights = 0,
+    ParametricHighlights = 0, ParametricShadowSplit = 25,
+    ParametricMidtoneSplit = 50, ParametricHighlightSplit = 75,
+
+    -- HSL.
+    HueAdjustmentRed = 0, HueAdjustmentOrange = 0, HueAdjustmentYellow = 0,
+    HueAdjustmentGreen = 0, HueAdjustmentAqua = 0, HueAdjustmentBlue = 0,
+    HueAdjustmentPurple = 0, HueAdjustmentMagenta = 0,
+    SaturationAdjustmentRed = 0, SaturationAdjustmentOrange = 0,
+    SaturationAdjustmentYellow = 0, SaturationAdjustmentGreen = 0,
+    SaturationAdjustmentAqua = 0, SaturationAdjustmentBlue = 0,
+    SaturationAdjustmentPurple = 0, SaturationAdjustmentMagenta = 0,
+    LuminanceAdjustmentRed = 0, LuminanceAdjustmentOrange = 0,
+    LuminanceAdjustmentYellow = 0, LuminanceAdjustmentGreen = 0,
+    LuminanceAdjustmentAqua = 0, LuminanceAdjustmentBlue = 0,
+    LuminanceAdjustmentPurple = 0, LuminanceAdjustmentMagenta = 0,
+
+    -- Colour grading; shadows and highlights still use the SplitToning* names.
+    SplitToningShadowHue = 0, SplitToningShadowSaturation = 0,
+    SplitToningHighlightHue = 0, SplitToningHighlightSaturation = 0,
+    SplitToningBalance = 0, ColorGradeShadowLum = 0, ColorGradeHighlightLum = 0,
+    ColorGradeMidtoneHue = 0, ColorGradeMidtoneSat = 0, ColorGradeMidtoneLum = 0,
+    ColorGradeGlobalHue = 0, ColorGradeGlobalSat = 0, ColorGradeGlobalLum = 0,
+    ColorGradeBlending = 50,
+
+    -- Camera calibration.
+    RedHue = 0, RedSaturation = 0, GreenHue = 0, GreenSaturation = 0,
+    BlueHue = 0, BlueSaturation = 0, ShadowTint = 0,
+
+    -- Detail, defringe, vignette.
+    Sharpness = 0, LuminanceSmoothing = 0, ColorNoiseReduction = 0,
+    GrainAmount = 0, VignetteAmount = 0, PostCropVignetteAmount = 0,
+    DefringePurpleAmount = 0, DefringeGreenAmount = 0,
+    DefringePurpleHueLo = 30, DefringePurpleHueHi = 70,
+    DefringeGreenHueLo = 40, DefringeGreenHueHi = 60,
+
+    -- Lens and geometry: a warped lattice would scramble the LUT.
+    LensProfileEnable = 0, AutoLateralCA = 0, LensManualDistortionAmount = 0,
+    PerspectiveUpright = 0, PerspectiveScale = 100, PerspectiveX = 0,
+    PerspectiveY = 0, PerspectiveAspect = 0, PerspectiveHorizontal = 0,
+    PerspectiveVertical = 0, PerspectiveRotate = 0,
+}
 
 local SPATIAL_OFF = {
     GrainAmount = 0, Clarity2012 = 0, Dehaze = 0, Texture = 0, Sharpness = 0,
@@ -36,29 +104,47 @@ local function readBytes(path)
     local data = fh:read('*a'); fh:close(); return data
 end
 local function writeText(path, text)
-    local fh = io.open(path, 'w')
+    -- 'wb': in text mode the Windows CRT turns every \n into \r\n, so the same
+    -- preset would produce a different .cube on Windows than on macOS.
+    local fh = io.open(path, 'wb')
     if not fh then return false end
     fh:write(text); fh:close(); return true
 end
 
--- Zero-setup identity: the reference image ships inside the plugin. If it isn't
--- in the catalog yet, import it (by reference) so the user never has to. Returns
--- (photo) or (nil, errorMessage).
+-- Zero-setup identity: the reference image ships inside the plugin, but it is
+-- imported from a copy under the Lightroom app-data folder rather than from the
+-- plugin folder itself. Lightroom treats the identity as an ordinary catalog photo
+-- and writes XMP back into it, which would otherwise modify the shipped file (and
+-- show up as a dirty working tree for anyone running from a git checkout).
+-- Returns (photo) or (nil, errorMessage).
 local function ensureIdentity(catalog, n)
-    local bundled = LrPathUtils.child(LrPathUtils.child(_PLUGIN.path, 'identity'), 'identity_' .. n .. '.tif')
-    local photo = catalog:findPhotoByPath(bundled)
-    if photo then return photo end
-    if not LrFileUtils.exists(bundled) then
-        return nil, 'bundled identity image missing from the plugin:\n' .. bundled
+    local workDir = LrPathUtils.child(LrPathUtils.getStandardFilePath('appData'), 'xmp-to-cube')
+    local working = LrPathUtils.child(workDir, 'identity_' .. n .. '.tif')
+
+    if not LrFileUtils.exists(working) then
+        local bundled = LrPathUtils.child(LrPathUtils.child(_PLUGIN.path, 'identity'),
+            'identity_' .. n .. '.tif')
+        if not LrFileUtils.exists(bundled) then
+            return nil, 'bundled identity image missing from the plugin:\n' .. bundled
+        end
+        LrFileUtils.createAllDirectories(workDir)
+        LrFileUtils.copy(bundled, working)
+        if not LrFileUtils.exists(working) then
+            return nil, 'could not copy the identity image to:\n' .. working
+        end
     end
+
+    local photo = catalog:findPhotoByPath(working)
+    if photo then return photo end
+
     -- Not in the catalog yet: add it. Direct withWriteAccessDo in the async task
     -- (NOT wrapped in a plain pcall) so Lightroom's task context is preserved.
     local added
     catalog:withWriteAccessDo('xmp-to-cube: import identity', function()
-        added = catalog:addPhoto(bundled)
+        added = catalog:addPhoto(working)
     end)
     if not added then
-        return nil, 'could not import the bundled identity image into the catalog.'
+        return nil, 'could not import the identity image into the catalog.'
     end
     return added
 end
@@ -82,7 +168,7 @@ LrTasks.startAsyncTask(function()
     local catalog = LrApplication.activeCatalog()
 
     local pick = LrDialogs.runOpenPanel{
-        title = 'Pick the preset folder to convert (Cmd+Shift+G to paste a path)',
+        title = 'Pick the preset folder to convert',
         canChooseFiles = false, canChooseDirectories = true, allowsMultipleSelection = false }
     if not pick then return end
     local wantName = LrPathUtils.leafName(pick[1])
@@ -118,7 +204,7 @@ LrTasks.startAsyncTask(function()
     if not idPath or not LrFileUtils.exists(idPath) then
         LrDialogs.message('xmp-to-cube: identity file not on disk',
             'The identity photo is in the catalog but its file is missing at:\n\n'
-            .. tostring(idPath) .. '\n\nRe-add the plugin so the bundled identity/identity_33.tif is present.')
+            .. tostring(idPath) .. '\n\nRemove that photo from the catalog, or re-add the plugin, and run again.')
         return
     end
 
@@ -131,6 +217,7 @@ LrTasks.startAsyncTask(function()
         local rendered, exErr
         local ok, err = LrTasks.pcall(function()
             catalog:withWriteAccessDo('x2c ' .. pname, function()
+                photo:applyDevelopSettings(DEFAULTS)   -- clear the previous preset
                 photo:applyDevelopPreset(preset)
                 photo:applyDevelopSettings(SPATIAL_OFF)
             end)
